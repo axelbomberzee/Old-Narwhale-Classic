@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+
+  <link rel="apple-touch-icon" sizes="57x57" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-57x57.png">
+  <link rel="apple-touch-icon" sizes="60x60" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-60x60.png">
+  <link rel="apple-touch-icon" sizes="72x72" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-72x72.png">
+  <link rel="apple-touch-icon" sizes="76x76" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-76x76.png">
+  <link rel="apple-touch-icon" sizes="114x114" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-114x114.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-120x120.png">
+  <link rel="apple-touch-icon" sizes="144x144" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-144x144.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-152x152.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/web/20160822013317im_/http://narwhale.io/icons/apple-icon-180x180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/web/20160822013317im_/http://narwhale.io/icons/android-icon-192x192.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/web/20160822013317im_/http://narwhale.io/icons/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="96x96" href="/web/20160822013317im_/http://narwhale.io/icons/favicon-96x96.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/web/20160822013317im_/http://narwhale.io/icons/favicon-16x16.png">
+  <link rel="shortcut icon" href="/web/20160822013317im_/http://narwhale.io/icons/favicon.ico"/>
+  <link rel="manifest" href="icons/manifest.json">
+  <meta name="msapplication-TileColor" content="#ffffff">
+  <meta name="msapplication-TileImage" content="icons/ms-icon-144x144.png">
+  <meta name="theme-color" content="#ffffff">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="initial-scale=1">
+  <title>Narwhale.io</title>
+  <link rel="stylesheet" href="http://localhost:3000/css/main.css"/>
+</head>
+ 
+    <script type="text/javascript">
+        function toggle_visibility(id) {
+           var e = document.getElementById(id);
+           if(e.style.display == 'block') e.style.display = 'none';
+           else e.style.display = 'block';
+        }
+    </script>
+
+    <canvas id="cvs" tabindex="1"></canvas>
+    <div id="status"></div>
+    <div id="infobox">
+      <a id="lvtext">Lv</a>
+      <a id="lvnum">1</a>
+    </div>
+
+    <div id="leaderbox">
+      <p id="leaderboxtitle">Leaderboard</p>
+      <div id="champrec"> </div>
+      <div id="namerec"> </div>
+      <div id="levelrec"> </div>
+    </div>
+
+    <div id="spawnbox">
+      <p id="title">Narwhale.io by AxelBomberzee</p>
+      <div id="input-box">
+          <input id="playerNameInput" type="text" tabindex="0" autofocus placeholder="What's your name?" id="name" maxlength="25" required/>
+          <select id="rooms" onchange="game.join(this.value)">
+              <option disabled selected>Connecting...</option>
+          </select>
+          <select id="areas" onchange="game.changeArea(this.value)"></select>
+      </div>
+      <button class="genericButton" id="startButton" onclick="game.start()">Play</button>
+
+      <footer id="footer"></footer>
+
+        <button class="genericButton" onclick="window.open('http://iogames.space', '_blank')">More IO Games</button>
+        <iframe src="https://web.archive.org/web/20160822013317if_/https://www.facebook.com/plugins/like.php?href=https%3A%2F%2Fwww.facebook.com%2Fnarwhaleio&amp;width=100&amp;layout=button&amp;action=like&amp;size=small&amp;show_faces=true&amp;share=true&amp;height=65&amp;appId" width="100" height="20" style="border:none;overflow:hidden;padding-top:5px" scrolling="no" frameborder="0" allowtransparency="true"></iframe>
+        
+    </div>
+  <!-- JS -->
+  <script>
+    var SERVER_LIST = {
+        "Practice": {
+            "A": "ws://localhost:443"
+          
+        }
+    };
+    </script>
+
+  <script src="pixi.js"></script>
+  <script src="app.js?version=1.3"></script>
+
+ 
+
