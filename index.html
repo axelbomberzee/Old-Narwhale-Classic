@@ -67,8 +67,12 @@
   <!-- JS -->
   <script>
     // El servidor de juego (websocket_test.js) sirve HTTP y WS en el mismo puerto.
-    // Usamos el host actual (funciona local y en previews remotos).
-    var WS_HOST = window.location.host || "localhost:8080";
+    // Si la página la sirve el propio juego, usamos el host actual (local o preview).
+    // Si la abrís desde otro lado (server.js viejo en :3000 o file://), cae a localhost:8080.
+    // Si corrés el juego en otro puerto, cambiá WS_HOST a mano (ej: "localhost:443").
+    var WS_HOST = (window.location.protocol === "http:" || window.location.protocol === "https:")
+        ? window.location.host
+        : "localhost:8080";
     var SERVER_LIST = {
         "Practice": {
             "A": "ws://" + WS_HOST

@@ -360,6 +360,8 @@ class Narwhal {
   }
 
   setInput(dx, dy) {
+    if (!Number.isFinite(dx)) dx = 0;                 // blindaje anti-NaN
+    if (!Number.isFinite(dy)) dy = 0;
     const m = Math.hypot(dx, dy);
     if (m > 1) { dx /= m; dy /= m; }   // el cliente ya normaliza a <=1, por las dudas
     this.inputX = dx;
@@ -522,7 +524,7 @@ class Narwhal {
   }
 
   sendPlayerInfo(upgrades) {
-    const buf = Buffer.alloc(2 + upgrades.length);
+    const buf = Buffer.alloc(3 + upgrades.length); // opcode + level + count + ids
     let o = 0;
     buf.writeUInt8(OPCODES.PLAYER_INFO, o++);
     buf.writeUInt8(Math.min(this.level, 255), o++);
@@ -705,7 +707,8 @@ function encodeElement(buf, o, p) {
   // Cabeza: x, y, speed, velAngle, rot
   buf.writeFloatLE(head.x, o); o += 4;
   buf.writeFloatLE(head.y, o); o += 4;
-  const speed = Math.hypot(head.vx, head.vy);
+  let speed = Math.hypot(head.vx, head.vy);
+  if (!Number.isFinite(speed)) speed = 0;             // blindaje anti-NaN
   buf.writeUInt16LE(Math.min(Math.round(speed), 65535), o); o += 2;
   const velAng = speed > 1e-3 ? Math.atan2(head.vy, head.vx) : p.angle;
   buf.writeInt8(Math.round(clamp(velAng / Math.PI, -1, 1) * 127), o++);
@@ -738,12 +741,14 @@ class NarwhaleServer {
     this.rooms = new Map();
     this.leaderboardAccum = 0;
 
+    // ==================== TAMAÑOS DE SALA (originales del usuario) ====================
+    // 6400 es 5 * 1280. 3840 es 3 * 1280. Todo son múltiplos.
     this.rooms.set(0, new GameRoom(0, 'Large 1', 6000, 6000, 25));
     this.rooms.set(1, new GameRoom(1, 'Large 2', 6000, 6000, 25));
     this.rooms.set(2, new GameRoom(2, 'Sparse', 6000, 6000, 15));
     this.rooms.set(3, new GameRoom(3, 'Small 1', 3840, 3840, 9));
     this.rooms.set(4, new GameRoom(4, 'Small 2', 3840, 3840, 9));
-    this.rooms.set(5, new GameRoom(5, 'Mega Small', 2000, 2000, 9));
+    this.rooms.set(5, new GameRoom(5, 'Mega Small', 1200, 1200, 9));
   }
 
   start() {
@@ -809,11 +814,12 @@ class NarwhaleServer {
     const rooms = [...this.rooms.values()].map(r => ({
       id: r.id,
       name: r.name,
+      area: 'Practice',
       playerCount: r.players.size,
       options: {
         width: r.width,
         height: r.height,
-        cellWidth: 1200,
+        cellWidth: 1200, // <-- clave: 640 en lugar de 1280 (original del usuario)
         hasIndicator: false,
         isPriority: r.id < 2,
         fieldType: 0,
