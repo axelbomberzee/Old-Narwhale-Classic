@@ -66,7 +66,6 @@ const CONFIG = {
   physics: {
     maxSpeed: 240,       // px/s de nado normal
     accelK: 5,           // suavizado exponencial hacia la velocidad objetivo
-    angAccel: 16,        // rad/s² — el giro se construye gradual (inercia)
     dashSpeed: 900,      // px/s del dash
     dashK: 14,           // aceleración (brusquedad) durante el dash
     dashDuration: 0.55,  // s
@@ -78,7 +77,6 @@ const CONFIG = {
     // ---- Cadena ----
     chainParts: 11,
     segLen: 36,          // hardcodeado en el cliente (i.size = 36)
-    followK: 14,         // (legacy) respuesta de la cola
     vtMax: 10,           // rad/s máximo por segmento
     bodyRadius: 15,      // radio de colisión de cada segmento
     tuskBaseLen: 30,     // colmillo: largo = tuskBaseLen + 45 * tuskRatio
@@ -266,21 +264,31 @@ const CHAIN = {
       }
     }
 
-    // --- 3) cabeza ---
+    // --- 3) CABEZA: libre, no hereda nada del path ---
+    // La cabeza es una cosa distinta al cuerpo: apunta a donde apunta
+    // (this.angle, giro directo al input) y su "cuello" (segmento 1) es
+    // rígido con ella. El colmillo (p0->p1) apunta EXACTO al input.
     const head = parts[0];
     head.x = p.x; head.y = p.y;
     head.vx = p.vx; head.vy = p.vy;
-    head.rot = tangents[0];          // nariz = tangente real del rastro
+    head.rot = p.angle;
     head.vt = p.angularVel;
 
-    // --- 4) suavizado temporal de orientaciones ---
-    // La ONDA nace acá como consecuencia: el frente sigue el arco rápido
-    // (rate alto) y la cola más lenta => la curva recorre el cuerpo.
-    // Sin motor físico por articulación: exponencial simple por segmento.
-    for (let i = 1; i < n; i++) {
+    if (p.breakPoint > 1) {
+      const neck = parts[1];
+      neck.rot = p.angle;
+      neck.x = head.x - Math.cos(p.angle) * segLen;
+      neck.y = head.y - Math.sin(p.angle) * segLen;
+      neck.vx = p.vx; neck.vy = p.vy;
+      neck.vt = 0;
+    }
+
+    // --- 4) CUERPO (segmentos 2+): rastro + tangente + suavizado ---
+    // La onda nace del retardo del suavizado: frente rápido, cola lenta.
+    for (let i = 2; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
-        const rate = 20 - (14 * (i - 1)) / Math.max(1, n - 2);   // 20/s frente -> 6/s punta
+        const rate = 20 - (14 * (i - 2)) / Math.max(1, n - 3);   // 20/s frente -> 6/s punta
         const k = 1 - Math.exp(-rate * dt);
         part.rot = wrapAngle(part.rot + wrapAngle(tangents[i] - part.rot) * k);
 
@@ -504,24 +512,21 @@ class Narwhal {
       this.overDash = 0;
     }
 
-    // ---- Giro de la cabeza: GRADUAL (inercia angular) ----
-    // El rumbo se construye: la velocidad de giro acelera hacia el valor
-    // deseado en vez de aplicarse al instante. Zona muerta: el giro
-    // también se frena gradualmente y se mantiene el rumbo.
+    // ---- Giro de la cabeza: LIBRE y DIRECTO (cabeza ≠ cuerpo) ----
+    // La cabeza no hereda restricciones del path ni suavizados del cuerpo:
+    // apunta al input directo (solo limitada por turnRate). El CUERPO es
+    // el que sigue el rastro. Zona muerta: sin giro, se mantiene el rumbo.
     const DEAD_ZONE = 0.12;
     const mag = Math.hypot(this.inputX, this.inputY);
     let turnRate = this.turnRate;
     if (this.dashTime > 0) turnRate *= 0.5;   // durante el dash gira menos
+    this.angularVel = 0;
     if (mag >= DEAD_ZONE) {
       const targetAngle = Math.atan2(this.inputY, this.inputX);
       const delta = wrapAngle(targetAngle - this.angle);
-      const desiredW = clamp(delta * 6, -turnRate, turnRate);
-      this.angularVel += clamp(desiredW - this.angularVel, -P.angAccel * dt, P.angAccel * dt);
-    } else {
-      // sin input: el giro se apaga rápido (asentarse, no costear media vuelta)
-      this.angularVel *= Math.exp(-10 * dt);
+      this.angularVel = clamp(delta * 10, -turnRate, turnRate);
+      this.angle = wrapAngle(this.angle + this.angularVel * dt);
     }
-    this.angle = wrapAngle(this.angle + this.angularVel * dt);
 
     // ---- Velocidad objetivo (casi constante entre snapshots => la
     //      extrapolación lineal del cliente funciona) ----
@@ -697,8 +702,9 @@ class GameRoom {
     const list = [...this.players.values()].filter(p => p.isAlive);
     for (const atk of list) {
       const head = atk.parts[0];
-      // dirección del colmillo = nariz REAL (tangente del rastro) = lo que se ve
-      const nose = head.rot;
+      // colmillo = cabeza libre (p0->p1 es rígido con this.angle: lo que
+      // se ve apuntando es exactamente this.angle)
+      const nose = atk.angle;
       const len = atk.tuskLen;
       const tx = head.x + Math.cos(nose) * len;
       const ty = head.y + Math.sin(nose) * len;
@@ -1061,7 +1067,7 @@ Puerto HTTP+WS: ${CONFIG.port}   |  Tick: ${CONFIG.tickRate} Hz   |  Snapshots: 
 Física espejada con el cliente:
   ✓ time de SetElements en SEGUNDOS (bug del throttling corregido)
   ✓ cadena: segLen=36 + rots compatibles con la extrapolación del cliente
-  ✓ cabeza con INERCIA ANGULAR (giro gradual) y velocidad casi constante
+  ✓ cabeza LIBRE: giro directo al input (sin suavizado del path) + cuello rígido
   ✓ cuerpo RASTRO: spacing sobre el path + tangente local por tramo + suavizado (onda emergente), sin recorrido no se mueven
   ✓ corte por colmillo con breakPoint + splice sincronizado
   ✓ UID 16 bits consistente entre START y SetElements

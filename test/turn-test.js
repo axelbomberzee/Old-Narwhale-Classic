@@ -19,6 +19,7 @@ const ws = new WebSocket(URL);
 ws.binaryType = 'arraybuffer';
 let uid = null, last = null, prev = null, lastDelta = 0;
 const noseDev = [];
+const neckDev = [];
 let phase = 'settle';
 const frozenDeltas = [];
 
@@ -55,7 +56,11 @@ ws.on('message', (d) => {
     if (id === uid) {
       prev = last;
       last = { rot, speed, rots };
-      if (phase === 'turn' && prev) noseDev.push(Math.abs(wrap((rots[5] || rot) - rot)));
+      if (phase === 'turn' && prev) {
+        noseDev.push(Math.abs(wrap((rots[5] || rot) - rot)));
+        // cuello rígido: el segmento 1 SIEMPRE alineado con la cabeza libre
+        neckDev.push(Math.abs(wrap((rots[1] || rot) - rot)));
+      }
       if (phase === 'frozen' && prev && frozenStart > 0 && Date.now() - frozenStart > 1300) {
         let mx = Math.abs(wrap(rot - prev.rot));
         for (let i = 1; i <= 10; i++) {
@@ -84,11 +89,14 @@ setTimeout(() => {
     else {
       clearInterval(timer);
       const maxNose = Math.max(...noseDev, 0);
+      const maxNeck = Math.max(...neckDev, 0);
       const maxFrozen = Math.max(...frozenDeltas, 0);
       ok(Math.abs(wrap(last.rot - Math.PI)) < 0.2,
-        `nariz alineada con el viaje al asentar (${(last.rot * 57.3).toFixed(0)}° vs 180°)`);
+        `cabeza LIBRE llega al input directo (${(last.rot * 57.3).toFixed(0)}° vs 180°)`);
+      ok(maxNeck < 0.07,
+        `cuello rígido: segmento 1 = cabeza siempre (desvío máx ${(maxNeck * 57.3).toFixed(1)}°)`);
       ok(maxNose > 0.2,
-        `el cuerpo sigue la curva del rastro en giros (desvío medio-cuerpo máx ${(maxNose * 57.3).toFixed(0)}°)`);
+        `cuerpo sigue la curva del path con onda (medio-cuerpo máx ${(maxNose * 57.3).toFixed(0)}°)`);
       ok(last.speed < 40,
         `zona muerta frena (speed=${last.speed.toFixed(0)} px/s)`);
       ok(frozenDeltas.length > 5 && maxFrozen < 0.009,
