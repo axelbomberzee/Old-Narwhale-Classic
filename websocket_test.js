@@ -205,76 +205,92 @@ const CHAIN = {
     part.y = py + Math.sin(part.rot + Math.PI) * segLen;
   },
 
-  // Simulación server-side de la cadena completa de un narval.
-  // La cabeza es autoritativa (la mueve la física del jugador).
+  // ==================================================================
+  //  SEGMENTOS = RASTRO (path following, estilo clásico)
   //
-  //  ⚠ IMPORTANTE: el cliente dibuja el hocico/colmillo sobre el vector
-  //  parts[0]->parts[1], así que el segmento 1 debe ser RÍGIDO con la
-  //  cabeza. Si deja lag (como en el updaterel puro, donde maxAngle(1)=0
-  //  le frena el vt a un 25% por frame), la nariz "no mira al input".
-  //  El resto de la cola sigue con curva progresiva y doblé limitado.
-  updateChain(p, dt) {
+  //  Los segmentos NO dependen de la posición/orientación de la cabeza:
+  //  viven SOBRE el camino que la cabeza recorrió, a distancias fijas de
+  //  arco (i × segLen). Si la cabeza no se desplaza, el rastro no crece
+  //  y los segmentos quedan congelados. Al girar, el cuerpo queda sobre
+  //  la curva que la cabeza dibujó => la nariz nunca atraviesa su cuerpo.
+  //
+  //  El protocolo solo envía rot por segmento y el cliente reconstruye
+  //  pos_i = pos_(i-1) + 36·dir(rot_i+π), así que:
+  //    rot_i = dirección del segmento i hacia el segmento i-1 (sobre el rastro)
+  //  y el re-espaciado exacto se hace igual que el cliente.
+  // ==================================================================
+  updateSegments(p, dt) {
     const P = CONFIG.physics;
     const parts = p.parts;
     const n = parts.length;
+    const segLen = P.segLen;
 
-    // Cabeza
+    // --- objetivos sobre el rastro: arco i·segLen detrás de la cabeza ---
+    const targets = [{ x: p.x, y: p.y }]; // índice 0 = cabeza
+    const t = p.trail;
+    let need = segLen;      // próximo arco requerido
+    let acc = 0;            // arco recorrido del walk
+    let prev = targets[0];
+    for (let i = 0; i < t.length && targets.length < n; i++) {
+      const q = t[i];
+      const dx = q.x - prev.x, dy = q.y - prev.y;
+      const d = Math.hypot(dx, dy);
+      while (acc + d >= need && targets.length < n) {
+        const f = d > 0 ? (need - acc) / d : 0;
+        targets.push({ x: prev.x + dx * f, y: prev.y + dy * f });
+        need += segLen;
+      }
+      acc += d;
+      prev = q;
+    }
+    // rastro corto (spawn): completar recto hacia atrás con la última dirección
+    while (targets.length < n) {
+      const a = targets[targets.length - 1];
+      const b = targets[targets.length - 2] || { x: a.x - 1, y: a.y };
+      let dx = a.x - b.x, dy = a.y - b.y;
+      const m = Math.hypot(dx, dy) || 1;
+      targets.push({ x: a.x + (dx / m) * segLen, y: a.y + (dy / m) * segLen });
+    }
+
+    // --- cabeza: nariz = tangente del rastro (dirección real de viaje) ---
     const head = parts[0];
-    head.x = p.x;
-    head.y = p.y;
-    head.vx = p.vx;
-    head.vy = p.vy;
-    head.rot = p.angle;
-    head.vt = p.angularVel;
+    head.x = p.x; head.y = p.y;
+    head.vx = p.vx; head.vy = p.vy;
 
-    let prev = head;
+    // --- segmentos vivos: rot hacia el anterior + re-espaciado 36px ---
     for (let i = 1; i < n; i++) {
       const part = parts[i];
-
-      if (i === p.breakPoint) {
-        // Parte libre (ancla de la cola cortada): vuela con inercia
+      if (i < p.breakPoint) {
+        const tg = targets[i], pv = targets[i - 1];
+        const dx = pv.x - tg.x, dy = pv.y - tg.y;
+        const dd = Math.hypot(dx, dy) || 1;
+        part.rot = Math.atan2(dy, dx);
+        // igual que el cliente reconstruye: exactamente 36px detrás del anterior
+        part.x = pv.x - (dx / dd) * segLen;
+        part.y = pv.y - (dy / dd) * segLen;
+        part.vx = p.vx; part.vy = p.vy;
+        part.vt = 0; // el rastro manda; el cliente deriva su vt de los Δrot
+      } else if (i === p.breakPoint) {
+        // parte libre (ancla de la cola cortada): vuela con inercia
         part.x += part.vx * dt;
         part.y += part.vy * dt;
         const decay = Math.exp(-2.0 * dt);
-        part.vx *= decay;
-        part.vy *= decay;
+        part.vx *= decay; part.vy *= decay;
         part.rot += part.vt * dt;
         part.vt *= decay;
       } else {
-        // ============================================================
-        //  DINÁMICA RESORTE-AMORTIGUADOR (inercia + oscilación)
-        //
-        //  Cada segmento persigue la orientación del anterior con un
-        //  muelle subamortiguado: al girar, el cuerpo QUEDA ATRÁS siguiendo
-        //  el rastro del desplazamiento, barre con retardo y oscila al
-        //  asentarse (efecto látigo). El frente es firme (ω alto) y la
-        //  cola es blanda (ω bajo) => curva progresiva natural.
-        //
-        //    vt += (err·K − vt·D)·dt      K = ω²  (rigidez)
-        //    rot += vt·dt                 D = 2ζω (amortiguación)
-        // ============================================================
-        const t = (i - 1) / Math.max(1, n - 2);     // 0 = hocico, 1 = punta
-        const omega = 14 - 9 * t;                   // 14 rad/s frente -> 5 punta
-        const zeta = 0.85 - 0.35 * t;               // casi crítico -> látigo
-        const K = omega * omega;
-        const D = 2 * zeta * omega;
-
-        const err = wrapAngle(prev.rot - part.rot);
-        part.vt += (err * K - part.vt * D) * dt;
-        part.rot = wrapAngle(part.rot + part.vt * dt);
-
-        // Límite de doblé por segmento (evita enrollarse sobre sí mismo),
-        // pero deja laguar el frente lo justo para seguir el rastro
-        const maxBend = 0.45 + CHAIN.maxAngle(i) * 1.0;
-        const rel = wrapAngle(part.rot - prev.rot);
-        if (rel > maxBend) { part.rot = wrapAngle(prev.rot + maxBend); part.vt = Math.min(part.vt, 0); }
-        else if (rel < -maxBend) { part.rot = wrapAngle(prev.rot - maxBend); part.vt = Math.max(part.vt, 0); }
-
-        part.x = prev.x + Math.cos(part.rot + Math.PI) * P.segLen;
-        part.y = prev.y + Math.sin(part.rot + Math.PI) * P.segLen;
+        // cola cortada: cuelga rígida detrás de la parte libre
+        part.x = parts[i - 1].x + Math.cos(part.rot + Math.PI) * segLen;
+        part.y = parts[i - 1].y + Math.sin(part.rot + Math.PI) * segLen;
+        part.vx = 0; part.vy = 0;
+        part.vt *= Math.exp(-2.0 * dt);
       }
-      prev = part;
     }
+
+    // nariz del paquete = tangente real (cabeza -> segmento 1, invertida)
+    const n1 = parts[1];
+    head.rot = n1 ? Math.atan2(p.y - n1.y, p.x - n1.x) : p.angle;
+    head.vt = p.angularVel;
 
     // Sanitizer anti-NaN
     for (const s of parts) {
@@ -284,6 +300,21 @@ const CHAIN = {
       if (!Number.isFinite(s.vx)) s.vx = 0;
       if (!Number.isFinite(s.vy)) s.vy = 0;
       if (!Number.isFinite(s.vt)) s.vt = 0;
+    }
+  },
+
+  // Registra el paso de la cabeza en el rastro y recorta lo viejo
+  pushTrail(p) {
+    const t = p.trail;
+    if (!t.length) { t.push({ x: p.x, y: p.y }); return; }
+    const last = t[0];
+    if (Math.hypot(p.x - last.x, p.y - last.y) > 0.0001) t.unshift({ x: p.x, y: p.y });
+    // conservar solo lo necesario: (n+2)·36px de arco
+    const maxLen = CONFIG.physics.segLen * (p.parts.length + 2);
+    let acc = 0;
+    for (let i = 1; i < t.length; i++) {
+      acc += Math.hypot(t[i - 1].x - t[i].x, t[i - 1].y - t[i].y);
+      if (acc > maxLen) { t.length = i + 1; break; }
     }
   },
 };
@@ -306,8 +337,9 @@ class Narwhal {
 
     this.inputX = 0; this.inputY = 0;
 
-    // Cadena
+    // Cadena + rastro del desplazamiento
     this.parts = [];
+    this.trail = [];                // breadcrumbs del camino recorrido
     this.breakPoint = CONFIG.physics.chainParts; // sin cortes (= longitud)
     for (let i = 0; i < CONFIG.physics.chainParts; i++) {
       this.parts.push({ x: 0, y: 0, vx: 0, vy: 0, rot: 0, vt: 0 });
@@ -357,9 +389,16 @@ class Narwhal {
     this.angle = Math.random() * Math.PI * 2;
     this.angularVel = 0;
 
-    // Cadena inicial: recta detrás de la cabeza, espaciada 36 px
+    // Cadena inicial + rastro: recta detrás de la cabeza, espaciada 36 px
     this.parts = [];
+    this.trail = [];
     this.breakPoint = CONFIG.physics.chainParts;
+    for (let i = 0; i < CONFIG.physics.chainParts + 2; i++) {
+      this.trail.push({
+        x: this.x - Math.cos(this.angle) * CONFIG.physics.segLen * i,
+        y: this.y - Math.sin(this.angle) * CONFIG.physics.segLen * i,
+      });
+    }
     for (let i = 0; i < CONFIG.physics.chainParts; i++) {
       this.parts.push({
         x: this.x - Math.cos(this.angle) * CONFIG.physics.segLen * i,
@@ -496,8 +535,9 @@ class Narwhal {
     if (this.y < r) { this.y = r; this.vy = Math.abs(this.vy) * P.wallBounce; }
     else if (this.y > this.room.height - r) { this.y = this.room.height - r; this.vy = -Math.abs(this.vy) * P.wallBounce; }
 
-    // ---- Cadena (mismo integrador que el cliente) ----
-    CHAIN.updateChain(this, dt);
+    // ---- Rastro + segmentos sobre el path (si no hay recorrido, no se mueven) ----
+    CHAIN.pushTrail(this);
+    CHAIN.updateSegments(this, dt);
   }
 
   applyUpgrade(id) {
@@ -634,11 +674,12 @@ class GameRoom {
   collideTusks() {
     const list = [...this.players.values()].filter(p => p.isAlive);
     for (const atk of list) {
-      if (atk.invincibleDur > 0 && atk.spawnAge > CONFIG.dash.invincibleTime) { /* puede cortar igual */ }
       const head = atk.parts[0];
+      // dirección del colmillo = nariz REAL (tangente del rastro) = lo que se ve
+      const nose = head.rot;
       const len = atk.tuskLen;
-      const tx = head.x + Math.cos(atk.angle) * len;
-      const ty = head.y + Math.sin(atk.angle) * len;
+      const tx = head.x + Math.cos(nose) * len;
+      const ty = head.y + Math.sin(nose) * len;
 
       for (const vic of list) {
         if (vic === atk || !vic.isAlive) continue;
@@ -650,7 +691,7 @@ class GameRoom {
           const d = distToSegment(part.x, part.y, head.x, head.y, tx, ty);
           if (d < CONFIG.physics.bodyRadius + 4) {
             // Empuje del golpe sobre la víctima
-            const ang = atk.angle;
+            const ang = nose;
             const power = 220 + (atk.dashTime > 0 ? 260 : 0);
             vic.vx += Math.cos(ang) * power;
             vic.vy += Math.sin(ang) * power;
@@ -999,7 +1040,7 @@ Física espejada con el cliente:
   ✓ time de SetElements en SEGUNDOS (bug del throttling corregido)
   ✓ cadena: segLen=36 + rots compatibles con la extrapolación del cliente
   ✓ cabeza con INERCIA ANGULAR (giro gradual) y velocidad casi constante
-  ✓ cuerpo con RESORTE-AMORTIGUADOR: sigue el rastro, inercia y látigo
+  ✓ cuerpo RASTRO (path following): segmentos sobre el camino recorrido; sin recorrido no se mueven
   ✓ corte por colmillo con breakPoint + splice sincronizado
   ✓ UID 16 bits consistente entre START y SetElements
 
