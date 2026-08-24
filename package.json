@@ -1,0 +1,14 @@
+{
+  "name": "old-narwhale-classic",
+  "version": "1.0.0",
+  "description": "Restauración de Narwhale.io (2016) - cliente original + servidor reconstruido",
+  "main": "websocket_test.js",
+  "scripts": {
+    "start": "node websocket_test.js",
+    "bots": "node botardo.js",
+    "verify": "node test/verify.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

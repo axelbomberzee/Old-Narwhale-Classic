@@ -1,6 +1,6 @@
 const WebSocket = require("ws");
 
-const SERVER_URL = "ws://localhost:443";
+const SERVER_URL = "ws://localhost:8080";
 const NUM_BOTS = 10;
 
 const OPCODES = {
