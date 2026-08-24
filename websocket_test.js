@@ -64,8 +64,8 @@ const CONFIG = {
   worldHeight: 6000,
 
   physics: {
-    maxSpeed: 240,       // px/s de nado normal
-    accelK: 5,           // suavizado exponencial hacia la velocidad objetivo
+    maxSpeed: 280,       // px/s de nado constante (como el original)
+    accelK: 9,           // respuesta de velocidad (fluida, sin lentitud)
     dashSpeed: 900,      // px/s del dash
     dashK: 14,           // aceleración (brusquedad) durante el dash
     dashDuration: 0.55,  // s
@@ -288,13 +288,13 @@ const CHAIN = {
     for (let i = 2; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
-        const rate = 20 - (14 * (i - 2)) / Math.max(1, n - 3);   // 20/s frente -> 6/s punta
+        const rate = 26 - (17 * (i - 2)) / Math.max(1, n - 3);   // 26/s frente -> 9/s punta (fluido)
         const k = 1 - Math.exp(-rate * dt);
         part.rot = wrapAngle(part.rot + wrapAngle(tangents[i] - part.rot) * k);
 
-        // límite de doblé por articulación (anti-nudos, no se pliega)
+        // límite de doblé LAXO: solo anti-doblez extremo — el cuerpo es libre
         const ref = parts[i - 1].rot;
-        const bendMax = CHAIN.maxAngle(i) * 1.25 + 0.06;
+        const bendMax = CHAIN.maxAngle(i) * 2.0 + 0.30;
         const rel = wrapAngle(part.rot - ref);
         if (rel > bendMax) part.rot = wrapAngle(ref + bendMax);
         else if (rel < -bendMax) part.rot = wrapAngle(ref - bendMax);
@@ -542,7 +542,10 @@ class Narwhal {
       ty = this.retreatDirY * P.retreatSpeed;
       k = P.dashK;
     } else {
-      const throttle = mag < DEAD_ZONE ? 0 : Math.min(1, (mag - DEAD_ZONE) * 1.6);
+      // Velocidad CONSTANTE: el target del cliente marca el RUMBO, no la
+      // velocidad (como el original — nada de frenos por distancia al cursor).
+      // Solo la zona muerta (cursor al centro) frena.
+      const throttle = mag < DEAD_ZONE ? 0 : 1;
       tx = Math.cos(this.angle) * this.maxSpeed * throttle;
       ty = Math.sin(this.angle) * this.maxSpeed * throttle;
       k = P.accelK;
@@ -680,11 +683,11 @@ class GameRoom {
             if (d2 < minD * minD && d2 > 1e-6) {
               const d = Math.sqrt(d2);
               const nx = dx / d, ny = dy / d;
-              const push = (minD - d) * 0.5 * 0.6; // 60% de corrección (suave)
+              const push = (minD - d) * 0.5 * 0.35; // corrección suave (35%, sin frenazos)
               pa.x -= nx * push; pa.y -= ny * push;
               pb.x += nx * push; pb.y += ny * push;
               // Empuje de velocidad leve y simétrico
-              const imp = 40;
+              const imp = 22;
               A.vx -= nx * imp * 0.016; A.vy -= ny * imp * 0.016;
               B.vx += nx * imp * 0.016; B.vy += ny * imp * 0.016;
             }
