@@ -65,7 +65,8 @@ const CONFIG = {
 
   physics: {
     maxSpeed: 240,       // px/s de nado normal
-    accelK: 6,           // suavizado exponencial hacia la velocidad objetivo
+    accelK: 5,           // suavizado exponencial hacia la velocidad objetivo
+    angAccel: 16,        // rad/s² — el giro se construye gradual (inercia)
     dashSpeed: 900,      // px/s del dash
     dashK: 14,           // aceleración (brusquedad) durante el dash
     dashDuration: 0.55,  // s
@@ -239,26 +240,39 @@ const CHAIN = {
         part.vy *= decay;
         part.rot += part.vt * dt;
         part.vt *= decay;
-    } else {
-      const targetRot = Math.atan2(prev.y - part.y, prev.x - part.x);
-      if (i === 1) {
-        // Hocico RÍGIDO: siempre alineado con la cabeza, sin clamp.
-        // (sin esto, girando parado o en giros cerrados el segmento 1 no
-        //  alcanza a la cabeza y la nariz queda apuntando para atrás)
-        part.rot = prev.rot;
-        part.vt = clamp(p.angularVel, -P.vtMax, P.vtMax);
       } else {
-        // Cola: curva progresiva con doblé limitado por segmento
-        let err = wrapAngle(targetRot - part.rot);
-        const maxBend = CHAIN.maxAngle(i) * 1.2 + 0.05;
-        err = clamp(err, -maxBend, maxBend);
-        const k = Math.max(6, 16 - i);          // frente firme, cola fluida
-        part.rot = wrapAngle(part.rot + err * Math.min(1, k * dt));
-        part.vt = clamp(err * k, -P.vtMax, P.vtMax);
+        // ============================================================
+        //  DINÁMICA RESORTE-AMORTIGUADOR (inercia + oscilación)
+        //
+        //  Cada segmento persigue la orientación del anterior con un
+        //  muelle subamortiguado: al girar, el cuerpo QUEDA ATRÁS siguiendo
+        //  el rastro del desplazamiento, barre con retardo y oscila al
+        //  asentarse (efecto látigo). El frente es firme (ω alto) y la
+        //  cola es blanda (ω bajo) => curva progresiva natural.
+        //
+        //    vt += (err·K − vt·D)·dt      K = ω²  (rigidez)
+        //    rot += vt·dt                 D = 2ζω (amortiguación)
+        // ============================================================
+        const t = (i - 1) / Math.max(1, n - 2);     // 0 = hocico, 1 = punta
+        const omega = 14 - 9 * t;                   // 14 rad/s frente -> 5 punta
+        const zeta = 0.85 - 0.35 * t;               // casi crítico -> látigo
+        const K = omega * omega;
+        const D = 2 * zeta * omega;
+
+        const err = wrapAngle(prev.rot - part.rot);
+        part.vt += (err * K - part.vt * D) * dt;
+        part.rot = wrapAngle(part.rot + part.vt * dt);
+
+        // Límite de doblé por segmento (evita enrollarse sobre sí mismo),
+        // pero deja laguar el frente lo justo para seguir el rastro
+        const maxBend = 0.45 + CHAIN.maxAngle(i) * 1.0;
+        const rel = wrapAngle(part.rot - prev.rot);
+        if (rel > maxBend) { part.rot = wrapAngle(prev.rot + maxBend); part.vt = Math.min(part.vt, 0); }
+        else if (rel < -maxBend) { part.rot = wrapAngle(prev.rot - maxBend); part.vt = Math.max(part.vt, 0); }
+
+        part.x = prev.x + Math.cos(part.rot + Math.PI) * P.segLen;
+        part.y = prev.y + Math.sin(part.rot + Math.PI) * P.segLen;
       }
-      part.x = prev.x + Math.cos(part.rot + Math.PI) * P.segLen;
-      part.y = prev.y + Math.sin(part.rot + Math.PI) * P.segLen;
-    }
       prev = part;
     }
 
@@ -429,22 +443,24 @@ class Narwhal {
       this.overDash = 0;
     }
 
-    // ---- Giro de la cabeza ----
-    // Zona muerta: cursor en/sobre el centro -> frenar Y mantener rumbo.
-    // (el cliente solo manda UpdateTarget al mover el mouse; girar con
-    //  input casi nulo hacía rotar al narval parado y desalineaba la nariz)
+    // ---- Giro de la cabeza: GRADUAL (inercia angular) ----
+    // El rumbo se construye: la velocidad de giro acelera hacia el valor
+    // deseado en vez de aplicarse al instante. Zona muerta: el giro
+    // también se frena gradualmente y se mantiene el rumbo.
     const DEAD_ZONE = 0.12;
     const mag = Math.hypot(this.inputX, this.inputY);
     let turnRate = this.turnRate;
     if (this.dashTime > 0) turnRate *= 0.5;   // durante el dash gira menos
-    let newAngularVel = 0;
     if (mag >= DEAD_ZONE) {
       const targetAngle = Math.atan2(this.inputY, this.inputX);
       const delta = wrapAngle(targetAngle - this.angle);
-      newAngularVel = clamp(delta * 10, -turnRate, turnRate);
-      this.angle = wrapAngle(this.angle + newAngularVel * dt);
+      const desiredW = clamp(delta * 6, -turnRate, turnRate);
+      this.angularVel += clamp(desiredW - this.angularVel, -P.angAccel * dt, P.angAccel * dt);
+    } else {
+      // sin input: el giro se apaga rápido (asentarse, no costear media vuelta)
+      this.angularVel *= Math.exp(-10 * dt);
     }
-    this.angularVel = newAngularVel;
+    this.angle = wrapAngle(this.angle + this.angularVel * dt);
 
     // ---- Velocidad objetivo (casi constante entre snapshots => la
     //      extrapolación lineal del cliente funciona) ----
@@ -981,8 +997,9 @@ Puerto HTTP+WS: ${CONFIG.port}   |  Tick: ${CONFIG.tickRate} Hz   |  Snapshots: 
 
 Física espejada con el cliente:
   ✓ time de SetElements en SEGUNDOS (bug del throttling corregido)
-  ✓ cadena con segLen=36 + updaterel idéntico (damp 0.15+0.35i/N, maxAng 2π/3(i-1)/10)
-  ✓ cabeza a velocidad ~constante entre snapshots (extrapolación lineal del cliente)
+  ✓ cadena: segLen=36 + rots compatibles con la extrapolación del cliente
+  ✓ cabeza con INERCIA ANGULAR (giro gradual) y velocidad casi constante
+  ✓ cuerpo con RESORTE-AMORTIGUADOR: sigue el rastro, inercia y látigo
   ✓ corte por colmillo con breakPoint + splice sincronizado
   ✓ UID 16 bits consistente entre START y SetElements
 
