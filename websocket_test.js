@@ -252,24 +252,51 @@ const CHAIN = {
       targets.push({ x: a.x + (dx / m) * segLen, y: a.y + (dy / m) * segLen });
     }
 
-    // --- cabeza: nariz = tangente del rastro (dirección real de viaje) ---
+    // --- 2) orientación local: TANGENTE del path en cada tramo ---
+    // diferencia central (T_{i-1} - T_{i+1}): estable en curvas cerradas,
+    // nunca "apunta arbitrario" cuando la trayectoria cambia
+    const tangents = new Array(n);
+    for (let i = 0; i < n; i++) {
+      if (i === 0) {
+        tangents[0] = Math.atan2(targets[0].y - targets[1].y, targets[0].x - targets[1].x);
+      } else if (i === n - 1 || !targets[i + 1]) {
+        tangents[i] = Math.atan2(targets[i - 1].y - targets[i].y, targets[i - 1].x - targets[i].x);
+      } else {
+        tangents[i] = Math.atan2(targets[i - 1].y - targets[i + 1].y, targets[i - 1].x - targets[i + 1].x);
+      }
+    }
+
+    // --- 3) cabeza ---
     const head = parts[0];
     head.x = p.x; head.y = p.y;
     head.vx = p.vx; head.vy = p.vy;
+    head.rot = tangents[0];          // nariz = tangente real del rastro
+    head.vt = p.angularVel;
 
-    // --- segmentos vivos: rot hacia el anterior + re-espaciado 36px ---
+    // --- 4) suavizado temporal de orientaciones ---
+    // La ONDA nace acá como consecuencia: el frente sigue el arco rápido
+    // (rate alto) y la cola más lenta => la curva recorre el cuerpo.
+    // Sin motor físico por articulación: exponencial simple por segmento.
     for (let i = 1; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
-        const tg = targets[i], pv = targets[i - 1];
-        const dx = pv.x - tg.x, dy = pv.y - tg.y;
-        const dd = Math.hypot(dx, dy) || 1;
-        part.rot = Math.atan2(dy, dx);
-        // igual que el cliente reconstruye: exactamente 36px detrás del anterior
-        part.x = pv.x - (dx / dd) * segLen;
-        part.y = pv.y - (dy / dd) * segLen;
+        const rate = 20 - (14 * (i - 1)) / Math.max(1, n - 2);   // 20/s frente -> 6/s punta
+        const k = 1 - Math.exp(-rate * dt);
+        part.rot = wrapAngle(part.rot + wrapAngle(tangents[i] - part.rot) * k);
+
+        // límite de doblé por articulación (anti-nudos, no se pliega)
+        const ref = parts[i - 1].rot;
+        const bendMax = CHAIN.maxAngle(i) * 1.25 + 0.06;
+        const rel = wrapAngle(part.rot - ref);
+        if (rel > bendMax) part.rot = wrapAngle(ref + bendMax);
+        else if (rel < -bendMax) part.rot = wrapAngle(ref - bendMax);
+
+        // posición: cadena exacta de 36px, igual que el cliente reconstruye
+        // (el cuerpo nunca se desacopla: siempre enganchado a 36 del anterior)
+        part.x = parts[i - 1].x - Math.cos(part.rot) * segLen;
+        part.y = parts[i - 1].y - Math.sin(part.rot) * segLen;
         part.vx = p.vx; part.vy = p.vy;
-        part.vt = 0; // el rastro manda; el cliente deriva su vt de los Δrot
+        part.vt = 0;
       } else if (i === p.breakPoint) {
         // parte libre (ancla de la cola cortada): vuela con inercia
         part.x += part.vx * dt;
@@ -286,11 +313,6 @@ const CHAIN = {
         part.vt *= Math.exp(-2.0 * dt);
       }
     }
-
-    // nariz del paquete = tangente real (cabeza -> segmento 1, invertida)
-    const n1 = parts[1];
-    head.rot = n1 ? Math.atan2(p.y - n1.y, p.x - n1.x) : p.angle;
-    head.vt = p.angularVel;
 
     // Sanitizer anti-NaN
     for (const s of parts) {
@@ -1040,7 +1062,7 @@ Física espejada con el cliente:
   ✓ time de SetElements en SEGUNDOS (bug del throttling corregido)
   ✓ cadena: segLen=36 + rots compatibles con la extrapolación del cliente
   ✓ cabeza con INERCIA ANGULAR (giro gradual) y velocidad casi constante
-  ✓ cuerpo RASTRO (path following): segmentos sobre el camino recorrido; sin recorrido no se mueven
+  ✓ cuerpo RASTRO: spacing sobre el path + tangente local por tramo + suavizado (onda emergente), sin recorrido no se mueven
   ✓ corte por colmillo con breakPoint + splice sincronizado
   ✓ UID 16 bits consistente entre START y SetElements
 
