@@ -71,14 +71,14 @@ const CONFIG = {
     dashDuration: 0.55,  // s
     retreatSpeed: 480,   // px/s del retreat
     retreatDuration: 0.4,
-    turnRate: 3.4,       // rad/s base (mejorable)
+    turnRate: 4.0,       // rad/s base (mejorable)
     wallBounce: 0.35,
 
-    // ---- Cadena: idéntico al cliente ----
+    // ---- Cadena ----
     chainParts: 11,
     segLen: 36,          // hardcodeado en el cliente (i.size = 36)
-    followK: 12,         // respuesta de la cola (vt por rad de error)
-    vtMax: 6,            // rad/s máximo por segmento
+    followK: 14,         // (legacy) respuesta de la cola
+    vtMax: 10,           // rad/s máximo por segmento
     bodyRadius: 15,      // radio de colisión de cada segmento
     tuskBaseLen: 30,     // colmillo: largo = tuskBaseLen + 45 * tuskRatio
     tuskScaleLen: 45,
@@ -205,8 +205,13 @@ const CHAIN = {
   },
 
   // Simulación server-side de la cadena completa de un narval.
-  // La cabeza es autoritativa (la mueve la física del jugador); el resto
-  // sigue con el mismo integrador que usará el cliente para extrapolar.
+  // La cabeza es autoritativa (la mueve la física del jugador).
+  //
+  //  ⚠ IMPORTANTE: el cliente dibuja el hocico/colmillo sobre el vector
+  //  parts[0]->parts[1], así que el segmento 1 debe ser RÍGIDO con la
+  //  cabeza. Si deja lag (como en el updaterel puro, donde maxAngle(1)=0
+  //  le frena el vt a un 25% por frame), la nariz "no mira al input".
+  //  El resto de la cola sigue con curva progresiva y doblé limitado.
   updateChain(p, dt) {
     const P = CONFIG.physics;
     const parts = p.parts;
@@ -234,14 +239,26 @@ const CHAIN = {
         part.vy *= decay;
         part.rot += part.vt * dt;
         part.vt *= decay;
+    } else {
+      const targetRot = Math.atan2(prev.y - part.y, prev.x - part.x);
+      if (i === 1) {
+        // Hocico RÍGIDO: siempre alineado con la cabeza, sin clamp.
+        // (sin esto, girando parado o en giros cerrados el segmento 1 no
+        //  alcanza a la cabeza y la nariz queda apuntando para atrás)
+        part.rot = prev.rot;
+        part.vt = clamp(p.angularVel, -P.vtMax, P.vtMax);
       } else {
-        // El segmento apunta al anterior; vt responde al error angular
-        const targetRot = Math.atan2(prev.y - part.y, prev.x - part.x);
-        const err = wrapAngle(targetRot - part.rot);
-        part.vt = clamp(err * P.followK, -P.vtMax, P.vtMax);
-        CHAIN.updaterel(part, prev.x, prev.y, prev.rot, P.segLen, dt,
-          CHAIN.damp(i, n), CHAIN.maxAngle(i));
+        // Cola: curva progresiva con doblé limitado por segmento
+        let err = wrapAngle(targetRot - part.rot);
+        const maxBend = CHAIN.maxAngle(i) * 1.2 + 0.05;
+        err = clamp(err, -maxBend, maxBend);
+        const k = Math.max(6, 16 - i);          // frente firme, cola fluida
+        part.rot = wrapAngle(part.rot + err * Math.min(1, k * dt));
+        part.vt = clamp(err * k, -P.vtMax, P.vtMax);
       }
+      part.x = prev.x + Math.cos(part.rot + Math.PI) * P.segLen;
+      part.y = prev.y + Math.sin(part.rot + Math.PI) * P.segLen;
+    }
       prev = part;
     }
 
@@ -413,14 +430,18 @@ class Narwhal {
     }
 
     // ---- Giro de la cabeza ----
-    let turnRate = this.turnRate;
-    if (this.dashTime > 0) turnRate *= 0.4;   // durante el dash gira menos
+    // Zona muerta: cursor en/sobre el centro -> frenar Y mantener rumbo.
+    // (el cliente solo manda UpdateTarget al mover el mouse; girar con
+    //  input casi nulo hacía rotar al narval parado y desalineaba la nariz)
+    const DEAD_ZONE = 0.12;
     const mag = Math.hypot(this.inputX, this.inputY);
+    let turnRate = this.turnRate;
+    if (this.dashTime > 0) turnRate *= 0.5;   // durante el dash gira menos
     let newAngularVel = 0;
-    if (mag > 1e-4) {
+    if (mag >= DEAD_ZONE) {
       const targetAngle = Math.atan2(this.inputY, this.inputX);
       const delta = wrapAngle(targetAngle - this.angle);
-      newAngularVel = clamp(delta * 8, -turnRate, turnRate);
+      newAngularVel = clamp(delta * 10, -turnRate, turnRate);
       this.angle = wrapAngle(this.angle + newAngularVel * dt);
     }
     this.angularVel = newAngularVel;
@@ -439,7 +460,7 @@ class Narwhal {
       ty = this.retreatDirY * P.retreatSpeed;
       k = P.dashK;
     } else {
-      const throttle = Math.min(1, mag * 1.4);   // más lejos del cursor = más rápido
+      const throttle = mag < DEAD_ZONE ? 0 : Math.min(1, (mag - DEAD_ZONE) * 1.6);
       tx = Math.cos(this.angle) * this.maxSpeed * throttle;
       ty = Math.sin(this.angle) * this.maxSpeed * throttle;
       k = P.accelK;
