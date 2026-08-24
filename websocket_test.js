@@ -65,14 +65,16 @@ const CONFIG = {
 
   physics: {
     maxSpeed: 280,       // px/s de nado constante (como el original)
-    accelK: 9,           // respuesta de velocidad (fluida, sin lentitud)
-    dashSpeed: 900,      // px/s del dash
-    dashK: 14,           // aceleración (brusquedad) durante el dash
-    dashDuration: 0.55,  // s
-    retreatSpeed: 480,   // px/s del retreat
+    accelK: 11,          // aceleración rápida (fluida, sin cámara lenta)
+    decelK: 4.5,         // desaceleración suave (nunca frena de golpe)
+    angAccel: 25,        // rad/s² — rumbo gradual: ni giro ni freno brusco
+    dashSpeed: 1300,     // px/s del dash (potente)
+    dashK: 22,           // entrada al dash (pegajoso)
+    dashDuration: 0.5,   // s
+    retreatSpeed: 620,   // px/s del retreat
     retreatDuration: 0.4,
     turnRate: 4.0,       // rad/s base (mejorable)
-    wallBounce: 0.35,
+    wallBounce: 0.28,
 
     // ---- Cadena ----
     chainParts: 11,
@@ -283,24 +285,18 @@ const CHAIN = {
       neck.vt = 0;
     }
 
-    // --- 4) CUERPO (segmentos 2+): rastro + tangente + suavizado ---
-    // La onda nace del retardo del suavizado: frente rápido, cola lenta.
+    // --- 4) CUERPO (segmentos 2+): rastro + tangente, SIN restricciones duras ---
+    // Corrección pura hacia la tangente del path: respuesta rápida al frente
+    // y relajada hacia la punta => zigzag articulado, sin onda artificial.
+    // Sin clamps: la cadena exacta de 36px es la que evita el desacople.
     for (let i = 2; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
-        const rate = 26 - (17 * (i - 2)) / Math.max(1, n - 3);   // 26/s frente -> 9/s punta (fluido)
+        const rate = 42 - (26 * (i - 2)) / Math.max(1, n - 3);   // 42/s frente -> 16/s punta
         const k = 1 - Math.exp(-rate * dt);
         part.rot = wrapAngle(part.rot + wrapAngle(tangents[i] - part.rot) * k);
 
-        // límite de doblé LAXO: solo anti-doblez extremo — el cuerpo es libre
-        const ref = parts[i - 1].rot;
-        const bendMax = CHAIN.maxAngle(i) * 2.0 + 0.30;
-        const rel = wrapAngle(part.rot - ref);
-        if (rel > bendMax) part.rot = wrapAngle(ref + bendMax);
-        else if (rel < -bendMax) part.rot = wrapAngle(ref - bendMax);
-
         // posición: cadena exacta de 36px, igual que el cliente reconstruye
-        // (el cuerpo nunca se desacopla: siempre enganchado a 36 del anterior)
         part.x = parts[i - 1].x - Math.cos(part.rot) * segLen;
         part.y = parts[i - 1].y - Math.sin(part.rot) * segLen;
         part.vx = p.vx; part.vy = p.vy;
@@ -512,21 +508,22 @@ class Narwhal {
       this.overDash = 0;
     }
 
-    // ---- Giro de la cabeza: LIBRE y DIRECTO (cabeza ≠ cuerpo) ----
-    // La cabeza no hereda restricciones del path ni suavizados del cuerpo:
-    // apunta al input directo (solo limitada por turnRate). El CUERPO es
-    // el que sigue el rastro. Zona muerta: sin giro, se mantiene el rumbo.
+    // ---- Giro de la cabeza: GRADUAL (cabeza ≠ cuerpo) ----
+    // Rumbo gradual: el giro acelera hacia el deseado (ni de golpe ni lento).
+    // Zona muerta: el giro se apaga suave, se mantiene el rumbo.
     const DEAD_ZONE = 0.12;
     const mag = Math.hypot(this.inputX, this.inputY);
     let turnRate = this.turnRate;
-    if (this.dashTime > 0) turnRate *= 0.5;   // durante el dash gira menos
-    this.angularVel = 0;
+    if (this.dashTime > 0) turnRate *= 0.6;   // durante el dash gira menos
     if (mag >= DEAD_ZONE) {
       const targetAngle = Math.atan2(this.inputY, this.inputX);
       const delta = wrapAngle(targetAngle - this.angle);
-      this.angularVel = clamp(delta * 10, -turnRate, turnRate);
-      this.angle = wrapAngle(this.angle + this.angularVel * dt);
+      const desiredW = clamp(delta * 5, -turnRate, turnRate);
+      this.angularVel += clamp(desiredW - this.angularVel, -P.angAccel * dt, P.angAccel * dt);
+    } else {
+      this.angularVel *= Math.exp(-6 * dt);
     }
+    this.angle = wrapAngle(this.angle + this.angularVel * dt);
 
     // ---- Velocidad objetivo (casi constante entre snapshots => la
     //      extrapolación lineal del cliente funciona) ----
@@ -550,6 +547,11 @@ class Narwhal {
       ty = Math.sin(this.angle) * this.maxSpeed * throttle;
       k = P.accelK;
     }
+    // Acelerar rápido, frenar suave: si el objetivo es más lento que la
+    // velocidad actual (zona muerta, salida del dash), se usa decelK =>
+    // nunca frena de golpe, siempre plancha.
+    const speedNow = Math.hypot(this.vx, this.vy);
+    if (Math.hypot(tx, ty) < speedNow) k = Math.min(k, P.decelK);
     const blend = 1 - Math.exp(-k * dt);
     this.vx += (tx - this.vx) * blend;
     this.vy += (ty - this.vy) * blend;
