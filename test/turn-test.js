@@ -93,8 +93,8 @@ setTimeout(() => {
       const maxFrozen = Math.max(...frozenDeltas, 0);
       ok(Math.abs(wrap(last.rot - Math.PI)) < 0.2,
         `cabeza LIBRE llega al input directo (${(last.rot * 57.3).toFixed(0)}° vs 180°)`);
-      ok(maxNeck < 0.07,
-        `cuello rígido: segmento 1 = cabeza siempre (desvío máx ${(maxNeck * 57.3).toFixed(1)}°)`);
+      ok(maxNeck < 0.32,
+        `cuello sigue a la cabeza rápido y suave, sin pliegue (lag máx ${(maxNeck * 57.3).toFixed(1)}°)`);
       ok(maxNose > 0.2,
         `cuerpo sigue la curva del path con onda (medio-cuerpo máx ${(maxNose * 57.3).toFixed(0)}°)`);
       ok(last.speed < 40,

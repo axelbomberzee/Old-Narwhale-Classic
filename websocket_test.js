@@ -58,7 +58,7 @@ const WebSocket = require('ws');
 const CONFIG = {
   port: 8080,
   tickRate: 60,          // Hz de simulación (dt fijo = réplica exacta del cliente)
-  snapshotEvery: 4,      // 60/4 = 15 snapshots por segundo (estables!)
+  snapshotEvery: 3,      // 60/3 = 20 snapshots por segundo (seguimiento fiel)
 
   worldWidth: 6000,
   worldHeight: 6000,
@@ -73,7 +73,7 @@ const CONFIG = {
     dashDuration: 0.5,   // s
     retreatSpeed: 620,   // px/s del retreat
     retreatDuration: 0.4,
-    turnRate: 4.0,       // rad/s base (mejorable)
+    turnRate: 5.2,       // rad/s base (mejorable)
     wallBounce: 0.28,
 
     // ---- Cadena ----
@@ -277,22 +277,29 @@ const CHAIN = {
     head.vt = p.angularVel;
 
     if (p.breakPoint > 1) {
+      // Cuello: persigue a la cabeza RAPIDÍSIMO pero suave (no rígido):
+      // el rígido instantáneo creaba un pliegue contra el seg2 (path viejo)
       const neck = parts[1];
-      neck.rot = p.angle;
-      neck.x = head.x - Math.cos(p.angle) * segLen;
-      neck.y = head.y - Math.sin(p.angle) * segLen;
+      const nk = 1 - Math.exp(-25 * dt);
+      neck.rot = wrapAngle(neck.rot + wrapAngle(p.angle - neck.rot) * nk);
+      neck.x = head.x - Math.cos(neck.rot) * segLen;
+      neck.y = head.y - Math.sin(neck.rot) * segLen;
       neck.vx = p.vx; neck.vy = p.vy;
       neck.vt = 0;
     }
 
     // --- 4) CUERPO (segmentos 2+): rastro + tangente, SIN restricciones duras ---
-    // Corrección pura hacia la tangente del path: respuesta rápida al frente
-    // y relajada hacia la punta => zigzag articulado, sin onda artificial.
-    // Sin clamps: la cadena exacta de 36px es la que evita el desacople.
+    // Corrección pura hacia la tangente del path. Rates UNIFORMES y rápidos
+    // (ondas zigzagueantes suaves y vibrantes, sin "S" ni relax) y LÁTIGO
+    // solo en el último 10% del cuerpo (punta). Sin clamps: la cadena exacta
+    // de 36px es la que evita el desacople.
     for (let i = 2; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
-        const rate = 42 - (26 * (i - 2)) / Math.max(1, n - 3);   // 42/s frente -> 16/s punta
+        let rate;
+        if (i === n - 1) rate = 26;        // punta: látigo
+        else if (i === n - 2) rate = 38;   // pre-punta
+        else rate = 48;                    // cuerpo: uniforme vibrante
         const k = 1 - Math.exp(-rate * dt);
         part.rot = wrapAngle(part.rot + wrapAngle(tangents[i] - part.rot) * k);
 
