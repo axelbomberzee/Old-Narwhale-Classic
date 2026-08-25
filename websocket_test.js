@@ -315,9 +315,12 @@ const CHAIN = {
         // objetivo: tangente del tramo (desplazamiento tangencial de arco)
         const target = tangents[i];
 
-        // impulso dominó del cambio de fuerza (crece hacia la punta)
+        // impulso dominó del cambio de fuerza — ciclos de desviación según
+        // la velocidad: a más velocidad, ondas más vivas (efecto VISUAL,
+        // no modifica la posición del cuerpo sobre el path)
+        const speedFac = 0.5 + 0.5 * clamp(spd / P.maxSpeed, 0, 1);
         const kick = clamp(
-          -dW * P.bodyKick.turnGain * (0.35 + 0.65 * t)
+          -dW * P.bodyKick.turnGain * (0.35 + 0.65 * t) * speedFac
           - dV * P.bodyKick.speedGain * t * Math.sin(1.7 * i),
           -P.bodyKick.max, P.bodyKick.max);
         part.vt += kick;
@@ -583,9 +586,17 @@ class Narwhal {
       // Velocidad CONSTANTE: el target del cliente marca el RUMBO, no la
       // velocidad (como el original — nada de frenos por distancia al cursor).
       // Solo la zona muerta (cursor al centro) frena.
-      const throttle = mag < DEAD_ZONE ? 0 : 1;
-      tx = Math.cos(this.angle) * this.maxSpeed * throttle;
-      ty = Math.sin(this.angle) * this.maxSpeed * throttle;
+      // El desplazamiento va MÁS ALLÁ del rumbo (derrape/inercia): al girar
+      // fuerte a alta velocidad, la velocidad BAJA PROGRESIVAMENTE y sube
+      // progresivamente cuando el target lo permite (recompone con accelK).
+      // Zona muerta: ralentí (casi estático, NO quieto) — el rumbo nunca
+      // queda 100% congelado salvo input inactivo.
+      const turnDrag = clamp(Math.abs(this.angularVel) / this.turnRate, 0, 1);
+      const cruise = this.maxSpeed * (1 - 0.45 * turnDrag);
+      const idle = this.maxSpeed * 0.08;              // ~30 px/s de deriva mínima
+      const vTarget = mag < DEAD_ZONE ? idle : cruise;
+      tx = Math.cos(this.angle) * vTarget;
+      ty = Math.sin(this.angle) * vTarget;
       k = P.accelK;
     }
     // Acelerar rápido, frenar suave: si el objetivo es más lento que la
