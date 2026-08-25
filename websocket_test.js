@@ -65,15 +65,15 @@ const CONFIG = {
 
   physics: {
     maxSpeed: 340,       // px/s de nado constante (rápido, como el original)
-    accelK: 22,          // crucero casi instantáneo
+    accelK: 28,          // crucero instantáneo
     decelK: 7,           // desaceleración suave (nunca frena de golpe)
-    angAccel: 36,        // rad/s² — rumbo gradual pero libre
-    dashSpeed: 1400,     // px/s del dash (potente)
-    dashK: 22,           // entrada al dash (pegajoso)
+    angAccel: 40,        // rad/s² — rumbo gradual y libre
+    dashSpeed: 1500,     // px/s del dash (potente)
+    dashK: 26,           // entrada al dash (pegajoso)
     dashDuration: 0.5,   // s
     retreatSpeed: 620,   // px/s del retreat
     retreatDuration: 0.4,
-    turnRate: 5.6,       // rad/s base (mejorable)
+    turnRate: 6.0,       // rad/s base (mejorable)
     wallBounce: 0.28,
 
     // ---- Cadena ----
@@ -81,13 +81,12 @@ const CONFIG = {
     segLen: 36,          // hardcodeado en el cliente (i.size = 36)
     vtMax: 12,           // rad/s máximo por segmento
 
-    // Ondulación de nado + centrífuga (el cuerpo flexible y vibrante)
-    wave: {
-      amp: 0.09,         // rad base de onda (crece hacia la punta)
-      phasePerPx: 0.028, // la fase SOLO avanza con distancia recorrida
-      segPhase: 0.9,     // desfase por segmento (la onda viaja hacia atrás)
-      centriGain: 0.0016,// amplitud extra por giro (v*omega)
-      centriMax: 0.55,
+    // Tambaleo transitorio: la cabeza absorbe los cambios de fuerza y los
+    // transmite al cuerpo como impulsos (no hay onda constante centrífuga)
+    bodyKick: {
+      turnGain: 0.5,     // impulso por cambio de giro (rad/s por rad/s)
+      speedGain: 0.002,  // impulso por cambio de velocidad (dash/impactos)
+      max: 3.0,          // rad/s máximo de impulso por tick
     },
     bodyRadius: 15,      // radio de colisión de cada segmento
     tuskBaseLen: 30,     // colmillo: largo = tuskBaseLen + 45 * tuskRatio
@@ -307,30 +306,41 @@ const CHAIN = {
     //    tienen momento propio, vibran al corregir — inercia, no lag.
     //    Libres pero correccionales. La cadena exacta de 36px evita el
     //    desacople; no hay clamps ni maxAngle (eso es del cliente).
-    const W = P.wave;
+    // La cabeza ABSORBE los cambios de fuerza y se los transmite al cuerpo:
+    // cada cambio de giro (dW) o de velocidad (dV: dash, impactos) inyecta
+    // un impulso angular transitorio => tambaleo/tembleque que se disipa.
+    // La oscilación es RESPUESTA al cambio de fuerza, no una onda que
+    // sigue el path ni un empuje opuesto a la cabeza.
     const spd = Math.hypot(p.vx, p.vy);
-    p.wavePhase += spd * W.phasePerPx * dt;
-    const centri = clamp(-p.angularVel * spd * W.centriGain, -W.centriMax, W.centriMax);
+    const dW = p.angularVel - p.prevAngularVel;
+    const dV = spd - p.prevSpd;
+    p.prevAngularVel = p.angularVel;
+    p.prevSpd = spd;
 
     for (let i = 2; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
         const t = (i - 1) / (n - 1);              // 0 frente -> 1 punta
 
-        // objetivo flexible: tangente + onda (amplitud crece a la punta)
-        const amp = W.amp * Math.pow(t, 1.5) + Math.abs(centri) * t * 0.9;
-        const wave = Math.sin(p.wavePhase - i * W.segPhase) * amp + centri * t;
-        const target = wrapAngle(tangents[i] + wave);
+        // ancla: tangente del tramo de path (corrección gradual, sin saltos)
+        const target = tangents[i];
 
-        // inercia angular: frente firme (ω alto), punta suelta y vibrante
-        const omega = 14 - 6 * t;
-        const zeta = 0.65 - 0.25 * t;
+        // impulso transitorio del cambio de fuerza (crece hacia la punta)
+        const kick = clamp(
+          -dW * P.bodyKick.turnGain * (0.35 + 0.65 * t)
+          - dV * P.bodyKick.speedGain * t * Math.sin(1.7 * i),
+          -P.bodyKick.max, P.bodyKick.max);
+        part.vt += kick;
+
+        // inercia angular: respuesta GRADUAL y fuerte (momentum), nunca rígida
+        const omega = 10 - 4.5 * t;               // frente firme -> punta suelta
+        const zeta = 0.55 - 0.1 * t;              // vibra un poco al corregir
         const err = wrapAngle(target - part.rot);
         part.vt += (err * omega * omega - part.vt * 2 * zeta * omega) * dt;
         part.vt = clamp(part.vt, -P.vtMax, P.vtMax);
         part.rot = wrapAngle(part.rot + part.vt * dt);
 
-        // posición: cadena exacta de 36px, igual que el cliente reconstruye
+        // posición: cadena exacta de 36px — nunca salta ni se desacopla
         part.x = parts[i - 1].x - Math.cos(part.rot) * segLen;
         part.y = parts[i - 1].y - Math.sin(part.rot) * segLen;
         part.vx = p.vx; part.vy = p.vy;
@@ -399,7 +409,8 @@ class Narwhal {
     // Cadena + rastro del desplazamiento
     this.parts = [];
     this.trail = [];                // breadcrumbs del camino recorrido
-    this.wavePhase = 0;             // fase de la onda de nado (avanza con distancia)
+    this.prevAngularVel = 0;        // para impulsos: cambio de fuerza de la cabeza
+    this.prevSpd = 0;
     this.breakPoint = CONFIG.physics.chainParts; // sin cortes (= longitud)
     for (let i = 0; i < CONFIG.physics.chainParts; i++) {
       this.parts.push({ x: 0, y: 0, vx: 0, vy: 0, rot: 0, vt: 0 });
@@ -452,7 +463,8 @@ class Narwhal {
     // Cadena inicial + rastro: recta detrás de la cabeza, espaciada 36 px
     this.parts = [];
     this.trail = [];
-    this.wavePhase = 0;
+    this.prevAngularVel = 0;
+    this.prevSpd = 0;
     this.breakPoint = CONFIG.physics.chainParts;
     for (let i = 0; i < CONFIG.physics.chainParts + 2; i++) {
       this.trail.push({
