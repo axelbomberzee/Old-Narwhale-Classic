@@ -107,7 +107,7 @@ const CONFIG = {
     regen: 0.55,              // cargas por segundo
     regenPerUpgrade: 0.3,
     maxCharges: 10,
-    invincibleTime: 3.0,      // s al spawn
+    invincibleTime: 0,        // spawn normal, sin invisibilidad
     cutCooldown: 0.8,         // s entre cortes sobre la misma víctima
     minLivingParts: 4,        // con menos partes vivas -> RIP
   },
@@ -260,20 +260,6 @@ const CHAIN = {
       targets.push({ x: a.x + (dx / m) * segLen, y: a.y + (dy / m) * segLen });
     }
 
-    // --- 2) orientación local: TANGENTE del path en cada tramo ---
-    // diferencia central (T_{i-1} - T_{i+1}): estable en curvas cerradas,
-    // nunca "apunta arbitrario" cuando la trayectoria cambia
-    const tangents = new Array(n);
-    for (let i = 0; i < n; i++) {
-      if (i === 0) {
-        tangents[0] = Math.atan2(targets[0].y - targets[1].y, targets[0].x - targets[1].x);
-      } else if (i === n - 1 || !targets[i + 1]) {
-        tangents[i] = Math.atan2(targets[i - 1].y - targets[i].y, targets[i - 1].x - targets[i].x);
-      } else {
-        tangents[i] = Math.atan2(targets[i - 1].y - targets[i + 1].y, targets[i - 1].x - targets[i + 1].x);
-      }
-    }
-
     // --- 3) CABEZA: libre, no hereda nada del path ---
     // La cabeza es una cosa distinta al cuerpo: apunta a donde apunta
     // (this.angle, giro directo al input) y su "cuello" (segmento 1) es
@@ -306,11 +292,16 @@ const CHAIN = {
     //    tienen momento propio, vibran al corregir — inercia, no lag.
     //    Libres pero correccionales. La cadena exacta de 36px evita el
     //    desacople; no hay clamps ni maxAngle (eso es del cliente).
-    // La cabeza ABSORBE los cambios de fuerza y se los transmite al cuerpo:
-    // cada cambio de giro (dW) o de velocidad (dV: dash, impactos) inyecta
-    // un impulso angular transitorio => tambaleo/tembleque que se disipa.
-    // La oscilación es RESPUESTA al cambio de fuerza, no una onda que
-    // sigue el path ni un empuje opuesto a la cabeza.
+    // La cabeza ABSORBE los cambios de fuerza (giro, dash, impactos) y los
+    // transmite al cuerpo como impulsos => tambaleo/tembleque TRANSITORIO.
+    //
+    // GEOMETRÍA EXACTA: cada segmento vive SOBRE el path (dirección hacia el
+    // punto anterior del viaje) y se DESPLAZA CON ÉL. En una reversa de 180°
+    // la horquilla del path se recorre suave: sin saltos a la otra punta,
+    // sin nubes de segmentos, sin tapar la cara.
+    //
+    // TAMBALEO: offset angular con inercia propia, ACOTADO (±0.35 rad):
+    // por construcción la cadena no puede plegarse ni saltar posiciones.
     const spd = Math.hypot(p.vx, p.vy);
     const dW = p.angularVel - p.prevAngularVel;
     const dV = spd - p.prevSpd;
@@ -322,8 +313,9 @@ const CHAIN = {
       if (i < p.breakPoint) {
         const t = (i - 1) / (n - 1);              // 0 frente -> 1 punta
 
-        // ancla: tangente del tramo de path (corrección gradual, sin saltos)
-        const target = tangents[i];
+        // base: geometría del tramo de path donde vive el segmento
+        const baseRot = Math.atan2(targets[i - 1].y - targets[i].y,
+                                   targets[i - 1].x - targets[i].x);
 
         // impulso transitorio del cambio de fuerza (crece hacia la punta)
         const kick = clamp(
@@ -332,15 +324,17 @@ const CHAIN = {
           -P.bodyKick.max, P.bodyKick.max);
         part.vt += kick;
 
-        // inercia angular: respuesta GRADUAL y fuerte (momentum), nunca rígida
-        const omega = 10 - 4.5 * t;               // frente firme -> punta suelta
-        const zeta = 0.55 - 0.1 * t;              // vibra un poco al corregir
-        const err = wrapAngle(target - part.rot);
-        part.vt += (err * omega * omega - part.vt * 2 * zeta * omega) * dt;
-        part.vt = clamp(part.vt, -P.vtMax, P.vtMax);
-        part.rot = wrapAngle(part.rot + part.vt * dt);
+        // offset con inercia (muelle subamortiguado hacia 0)
+        const omega = 12 - 6 * t;                 // frente firme -> punta suelta
+        const zeta = 0.5;                         // vibra al corregir
+        part.vt += (-part.off * omega * omega - part.vt * 2 * zeta * omega) * dt;
+        part.off += part.vt * dt;
+        if (part.off > 0.35) { part.off = 0.35; part.vt = Math.min(part.vt, 0); }
+        else if (part.off < -0.35) { part.off = -0.35; part.vt = Math.max(part.vt, 0); }
 
-        // posición: cadena exacta de 36px — nunca salta ni se desacopla
+        part.rot = wrapAngle(baseRot + part.off);
+
+        // posición: cadena exacta de 36px — enganchada, jamás se desacopla
         part.x = parts[i - 1].x - Math.cos(part.rot) * segLen;
         part.y = parts[i - 1].y - Math.sin(part.rot) * segLen;
         part.vx = p.vx; part.vy = p.vy;
@@ -413,7 +407,7 @@ class Narwhal {
     this.prevSpd = 0;
     this.breakPoint = CONFIG.physics.chainParts; // sin cortes (= longitud)
     for (let i = 0; i < CONFIG.physics.chainParts; i++) {
-      this.parts.push({ x: 0, y: 0, vx: 0, vy: 0, rot: 0, vt: 0 });
+      this.parts.push({ x: 0, y: 0, vx: 0, vy: 0, rot: 0, vt: 0, off: 0 });
     }
 
     // Dash / stamina
@@ -477,7 +471,7 @@ class Narwhal {
         x: this.x - Math.cos(this.angle) * CONFIG.physics.segLen * i,
         y: this.y - Math.sin(this.angle) * CONFIG.physics.segLen * i,
         vx: 0, vy: 0,
-        rot: this.angle, vt: 0,
+        rot: this.angle, vt: 0, off: 0,
       });
     }
 
@@ -535,13 +529,8 @@ class Narwhal {
     if (!this.isAlive) return;
     const P = CONFIG.physics;
     this.spawnAge += dt;
-    if (this.invincibleDur > 0) {
-      this.invincibleDur -= dt;
-      // Parpadeo mientras es invencible
-      this.alpha = 0.45 + 0.55 * Math.abs(Math.sin(this.spawnAge * 12));
-    } else {
-      this.alpha = 1;
-    }
+    if (this.invincibleDur > 0) this.invincibleDur -= dt;
+    this.alpha = 1;   // spawn normal: sin invisibilidad ni parpadeo
     if (this.cutCooldown > 0) this.cutCooldown -= dt;
 
     // ---- Recarga de dash ----
@@ -1031,6 +1020,11 @@ class NarwhaleServer {
     // Si venía de otra sala, sacarlo
     if (p.room && p.room !== room) p.room.remove(p.id);
     room.add(p);
+
+    // Snapshot ANTES del START: así el cliente ya tiene el SetElements
+    // cargado cuando procesa su uid => sin flash en (0,0) ni frames
+    // estáticos mirando a la derecha
+    room.broadcastGameState();
 
     // Respuesta START: opcode + UID (U16LE) — debe casar con SetElements
     const res = Buffer.alloc(3);
