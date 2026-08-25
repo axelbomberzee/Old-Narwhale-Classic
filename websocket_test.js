@@ -260,50 +260,84 @@ const CHAIN = {
       targets.push({ x: a.x + (dx / m) * segLen, y: a.y + (dy / m) * segLen });
     }
 
-    // --- 3) CABEZA: libre — la cadena NO depende de ella ---
-    // TODOS los segmentos (1..9) viven en el path. La cabeza solo aporta
-    // el origen del path y las fuerzas que perturban el cuerpo (dominó).
+    // --- 2) RESTAURADO: orientación local = TANGENTE del path por tramo ---
+    // Diferencia central: desplazamiento tangencial de arco, suave, sin flips.
+    const tangents = new Array(n);
+    for (let i = 0; i < n; i++) {
+      if (i === 0) {
+        tangents[0] = Math.atan2(targets[0].y - targets[1].y, targets[0].x - targets[1].x);
+      } else if (i === n - 1 || !targets[i + 1]) {
+        tangents[i] = Math.atan2(targets[i - 1].y - targets[i].y, targets[i - 1].x - targets[i].x);
+      } else {
+        tangents[i] = Math.atan2(targets[i - 1].y - targets[i + 1].y, targets[i - 1].x - targets[i + 1].x);
+      }
+    }
+
+    // --- 3) RESTAURADO: cabeza libre + cuello (la cabeza CORRIGE al input) ---
     const head = parts[0];
     head.x = p.x; head.y = p.y;
     head.vx = p.vx; head.vy = p.vy;
+    head.rot = p.angle;
     head.vt = p.angularVel;
 
-    // --- 4) CUERPO (TODOS los segmentos 1..9): path + perturbación dominó ---
-    // Geometría exacta del path (cada segmento apunta al punto anterior de su
-    // viaje) + offset con inercia ACOTADO: ondas de perturbación tipo dominó,
-    // con relajación y compresión emergentes. Sin cuello rígido ni rigidez:
-    // la cadena no depende de la posición de la cabeza, solo del path.
+    if (p.breakPoint > 1) {
+      // Cuello: persigue a la cabeza rapidísimo pero suave (sin pliegue).
+      // Es lo que hace que el colmillo corrija firme hacia el input.
+      const neck = parts[1];
+      const nk = 1 - Math.exp(-25 * dt);
+      neck.rot = wrapAngle(neck.rot + wrapAngle(p.angle - neck.rot) * nk);
+      neck.x = head.x - Math.cos(neck.rot) * segLen;
+      neck.y = head.y - Math.sin(neck.rot) * segLen;
+      neck.vx = p.vx; neck.vy = p.vy;
+      neck.vt = 0;
+    }
+
+    // --- 4) RESTAURADO: CUERPO (segmentos 2..9) = tangente + INERCIA + dominó ---
+    // Persigue la tangente de su tramo con muelle subamortiguado: ondas,
+    // relajación y compresión emergentes — ondulado, no serpiente recta.
+    // La cabeza absorbe cambios de fuerza (dW/dV) y los transmite (kicks).
+    //
+    // ÚNICO fix anti-desacople (lo que se ajustó, sin tocar lo demás): el rot
+    // no puede desviarse más de maxDev de la GEOMETRÍA del path (baseRot).
+    // Así puede ondular todo lo que quiera pero jamás pliega, salta ni
+    // se desacopla en reversas.
     const spd = Math.hypot(p.vx, p.vy);
     const dW = p.angularVel - p.prevAngularVel;
     const dV = spd - p.prevSpd;
     p.prevAngularVel = p.angularVel;
     p.prevSpd = spd;
 
-    for (let i = 1; i < n; i++) {
+    for (let i = 2; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
         const t = (i - 1) / (n - 1);              // 0 frente -> 1 punta
 
-        // base: geometría del tramo de path donde vive el segmento
-        const baseRot = Math.atan2(targets[i - 1].y - targets[i].y,
-                                   targets[i - 1].x - targets[i].x);
+        // objetivo: tangente del tramo (desplazamiento tangencial de arco)
+        const target = tangents[i];
 
-        // impulso transitorio del cambio de fuerza (crece hacia la punta)
+        // impulso dominó del cambio de fuerza (crece hacia la punta)
         const kick = clamp(
           -dW * P.bodyKick.turnGain * (0.35 + 0.65 * t)
           - dV * P.bodyKick.speedGain * t * Math.sin(1.7 * i),
           -P.bodyKick.max, P.bodyKick.max);
         part.vt += kick;
 
-        // offset con inercia (muelle subamortiguado hacia 0)
+        // muelle subamortiguado hacia la tangente (inercia real)
         const omega = 16 - 8 * t;                 // respuesta rápida, no pesada
         const zeta = 0.45;                        // vibra al corregir (dominó)
-        part.vt += (-part.off * omega * omega - part.vt * 2 * zeta * omega) * dt;
-        part.off += part.vt * dt;
-        if (part.off > 0.35) { part.off = 0.35; part.vt = Math.min(part.vt, 0); }
-        else if (part.off < -0.35) { part.off = -0.35; part.vt = Math.max(part.vt, 0); }
+        const err = wrapAngle(target - part.rot);
+        part.vt += (err * omega * omega - part.vt * 2 * zeta * omega) * dt;
+        part.vt = clamp(part.vt, -P.vtMax, P.vtMax);
+        part.rot = wrapAngle(part.rot + part.vt * dt);
 
-        part.rot = wrapAngle(baseRot + part.off);
+        // anti-desacople (la mecánica ajustada, escalada): desviación máxima
+        // respecto de la geometría real del path
+        const baseRot = Math.atan2(targets[i - 1].y - targets[i].y,
+                                   targets[i - 1].x - targets[i].x);
+        const maxDev = 0.35 + 0.5 * t;            // más libertad hacia la punta
+        const dev = wrapAngle(part.rot - baseRot);
+        if (dev > maxDev) { part.rot = wrapAngle(baseRot + maxDev); part.vt = Math.min(part.vt, 0); }
+        else if (dev < -maxDev) { part.rot = wrapAngle(baseRot - maxDev); part.vt = Math.max(part.vt, 0); }
 
         // posición: cadena exacta de 36px — enganchada, jamás se desacopla
         part.x = parts[i - 1].x - Math.cos(part.rot) * segLen;
@@ -325,11 +359,6 @@ const CHAIN = {
         part.vt *= Math.exp(-2.0 * dt);
       }
     }
-
-    // Nariz del paquete = dirección real cabeza->seg1 (es lo que el cliente
-    // dibuja como colmillo). Con la cadena en el path queda alineada al
-    // viaje de forma natural, sin rigidez.
-    if (parts[1]) head.rot = Math.atan2(head.y - parts[1].y, head.x - parts[1].x);
 
     // Sanitizer anti-NaN
     for (const s of parts) {
