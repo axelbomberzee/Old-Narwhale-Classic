@@ -64,22 +64,31 @@ const CONFIG = {
   worldHeight: 6000,
 
   physics: {
-    maxSpeed: 280,       // px/s de nado constante (como el original)
-    accelK: 11,          // aceleración rápida (fluida, sin cámara lenta)
-    decelK: 4.5,         // desaceleración suave (nunca frena de golpe)
-    angAccel: 25,        // rad/s² — rumbo gradual: ni giro ni freno brusco
-    dashSpeed: 1300,     // px/s del dash (potente)
+    maxSpeed: 340,       // px/s de nado constante (rápido, como el original)
+    accelK: 22,          // crucero casi instantáneo
+    decelK: 7,           // desaceleración suave (nunca frena de golpe)
+    angAccel: 36,        // rad/s² — rumbo gradual pero libre
+    dashSpeed: 1400,     // px/s del dash (potente)
     dashK: 22,           // entrada al dash (pegajoso)
     dashDuration: 0.5,   // s
     retreatSpeed: 620,   // px/s del retreat
     retreatDuration: 0.4,
-    turnRate: 5.2,       // rad/s base (mejorable)
+    turnRate: 5.6,       // rad/s base (mejorable)
     wallBounce: 0.28,
 
     // ---- Cadena ----
     chainParts: 11,
     segLen: 36,          // hardcodeado en el cliente (i.size = 36)
-    vtMax: 10,           // rad/s máximo por segmento
+    vtMax: 12,           // rad/s máximo por segmento
+
+    // Ondulación de nado + centrífuga (el cuerpo flexible y vibrante)
+    wave: {
+      amp: 0.09,         // rad base de onda (crece hacia la punta)
+      phasePerPx: 0.028, // la fase SOLO avanza con distancia recorrida
+      segPhase: 0.9,     // desfase por segmento (la onda viaja hacia atrás)
+      centriGain: 0.0016,// amplitud extra por giro (v*omega)
+      centriMax: 0.55,
+    },
     bodyRadius: 15,      // radio de colisión de cada segmento
     tuskBaseLen: 30,     // colmillo: largo = tuskBaseLen + 45 * tuskRatio
     tuskScaleLen: 45,
@@ -288,26 +297,43 @@ const CHAIN = {
       neck.vt = 0;
     }
 
-    // --- 4) CUERPO (segmentos 2+): rastro + tangente, SIN restricciones duras ---
-    // Corrección pura hacia la tangente del path. Rates UNIFORMES y rápidos
-    // (ondas zigzagueantes suaves y vibrantes, sin "S" ni relax) y LÁTIGO
-    // solo en el último 10% del cuerpo (punta). Sin clamps: la cadena exacta
-    // de 36px es la que evita el desacople.
+    // --- 4) CUERPO (segmentos 2+): path + INERCIA + ONDULACIÓN ---
+    // Flexible y curvado, nunca recto-rígido:
+    //  - ancla: la tangente del tramo de path donde vive el segmento
+    //  - ONDA DE NADO constante que viaja hacia atrás; su fase SOLO avanza
+    //    con la distancia recorrida (sin recorrido => sin movimiento)
+    //  - CENTRÍFUGA: al girar, amplitud extra + la cola barre hacia afuera
+    //  - INERCIA angular de 2do orden (muelle subamortiguado): los segmentos
+    //    tienen momento propio, vibran al corregir — inercia, no lag.
+    //    Libres pero correccionales. La cadena exacta de 36px evita el
+    //    desacople; no hay clamps ni maxAngle (eso es del cliente).
+    const W = P.wave;
+    const spd = Math.hypot(p.vx, p.vy);
+    p.wavePhase += spd * W.phasePerPx * dt;
+    const centri = clamp(-p.angularVel * spd * W.centriGain, -W.centriMax, W.centriMax);
+
     for (let i = 2; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
-        let rate;
-        if (i === n - 1) rate = 26;        // punta: látigo
-        else if (i === n - 2) rate = 38;   // pre-punta
-        else rate = 48;                    // cuerpo: uniforme vibrante
-        const k = 1 - Math.exp(-rate * dt);
-        part.rot = wrapAngle(part.rot + wrapAngle(tangents[i] - part.rot) * k);
+        const t = (i - 1) / (n - 1);              // 0 frente -> 1 punta
+
+        // objetivo flexible: tangente + onda (amplitud crece a la punta)
+        const amp = W.amp * Math.pow(t, 1.5) + Math.abs(centri) * t * 0.9;
+        const wave = Math.sin(p.wavePhase - i * W.segPhase) * amp + centri * t;
+        const target = wrapAngle(tangents[i] + wave);
+
+        // inercia angular: frente firme (ω alto), punta suelta y vibrante
+        const omega = 14 - 6 * t;
+        const zeta = 0.65 - 0.25 * t;
+        const err = wrapAngle(target - part.rot);
+        part.vt += (err * omega * omega - part.vt * 2 * zeta * omega) * dt;
+        part.vt = clamp(part.vt, -P.vtMax, P.vtMax);
+        part.rot = wrapAngle(part.rot + part.vt * dt);
 
         // posición: cadena exacta de 36px, igual que el cliente reconstruye
         part.x = parts[i - 1].x - Math.cos(part.rot) * segLen;
         part.y = parts[i - 1].y - Math.sin(part.rot) * segLen;
         part.vx = p.vx; part.vy = p.vy;
-        part.vt = 0;
       } else if (i === p.breakPoint) {
         // parte libre (ancla de la cola cortada): vuela con inercia
         part.x += part.vx * dt;
@@ -373,6 +399,7 @@ class Narwhal {
     // Cadena + rastro del desplazamiento
     this.parts = [];
     this.trail = [];                // breadcrumbs del camino recorrido
+    this.wavePhase = 0;             // fase de la onda de nado (avanza con distancia)
     this.breakPoint = CONFIG.physics.chainParts; // sin cortes (= longitud)
     for (let i = 0; i < CONFIG.physics.chainParts; i++) {
       this.parts.push({ x: 0, y: 0, vx: 0, vy: 0, rot: 0, vt: 0 });
@@ -425,6 +452,7 @@ class Narwhal {
     // Cadena inicial + rastro: recta detrás de la cabeza, espaciada 36 px
     this.parts = [];
     this.trail = [];
+    this.wavePhase = 0;
     this.breakPoint = CONFIG.physics.chainParts;
     for (let i = 0; i < CONFIG.physics.chainParts + 2; i++) {
       this.trail.push({
