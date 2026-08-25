@@ -64,7 +64,7 @@ const CONFIG = {
   worldHeight: 6000,
 
   physics: {
-    maxSpeed: 340,       // px/s de nado constante (rápido, como el original)
+    maxSpeed: 380,       // px/s de nado constante (liviano, no pesado)
     accelK: 28,          // crucero instantáneo
     decelK: 7,           // desaceleración suave (nunca frena de golpe)
     angAccel: 40,        // rad/s² — rumbo gradual y libre
@@ -73,11 +73,11 @@ const CONFIG = {
     dashDuration: 0.5,   // s
     retreatSpeed: 620,   // px/s del retreat
     retreatDuration: 0.4,
-    turnRate: 6.0,       // rad/s base (mejorable)
+    turnRate: 6.8,       // rad/s base (mejorable)
     wallBounce: 0.28,
 
     // ---- Cadena ----
-    chainParts: 11,
+    chainParts: 10,
     segLen: 36,          // hardcodeado en el cliente (i.size = 36)
     vtMax: 12,           // rad/s máximo por segmento
 
@@ -260,55 +260,26 @@ const CHAIN = {
       targets.push({ x: a.x + (dx / m) * segLen, y: a.y + (dy / m) * segLen });
     }
 
-    // --- 3) CABEZA: libre, no hereda nada del path ---
-    // La cabeza es una cosa distinta al cuerpo: apunta a donde apunta
-    // (this.angle, giro directo al input) y su "cuello" (segmento 1) es
-    // rígido con ella. El colmillo (p0->p1) apunta EXACTO al input.
+    // --- 3) CABEZA: libre — la cadena NO depende de ella ---
+    // TODOS los segmentos (1..9) viven en el path. La cabeza solo aporta
+    // el origen del path y las fuerzas que perturban el cuerpo (dominó).
     const head = parts[0];
     head.x = p.x; head.y = p.y;
     head.vx = p.vx; head.vy = p.vy;
-    head.rot = p.angle;
     head.vt = p.angularVel;
 
-    if (p.breakPoint > 1) {
-      // Cuello: persigue a la cabeza RAPIDÍSIMO pero suave (no rígido):
-      // el rígido instantáneo creaba un pliegue contra el seg2 (path viejo)
-      const neck = parts[1];
-      const nk = 1 - Math.exp(-25 * dt);
-      neck.rot = wrapAngle(neck.rot + wrapAngle(p.angle - neck.rot) * nk);
-      neck.x = head.x - Math.cos(neck.rot) * segLen;
-      neck.y = head.y - Math.sin(neck.rot) * segLen;
-      neck.vx = p.vx; neck.vy = p.vy;
-      neck.vt = 0;
-    }
-
-    // --- 4) CUERPO (segmentos 2+): path + INERCIA + ONDULACIÓN ---
-    // Flexible y curvado, nunca recto-rígido:
-    //  - ancla: la tangente del tramo de path donde vive el segmento
-    //  - ONDA DE NADO constante que viaja hacia atrás; su fase SOLO avanza
-    //    con la distancia recorrida (sin recorrido => sin movimiento)
-    //  - CENTRÍFUGA: al girar, amplitud extra + la cola barre hacia afuera
-    //  - INERCIA angular de 2do orden (muelle subamortiguado): los segmentos
-    //    tienen momento propio, vibran al corregir — inercia, no lag.
-    //    Libres pero correccionales. La cadena exacta de 36px evita el
-    //    desacople; no hay clamps ni maxAngle (eso es del cliente).
-    // La cabeza ABSORBE los cambios de fuerza (giro, dash, impactos) y los
-    // transmite al cuerpo como impulsos => tambaleo/tembleque TRANSITORIO.
-    //
-    // GEOMETRÍA EXACTA: cada segmento vive SOBRE el path (dirección hacia el
-    // punto anterior del viaje) y se DESPLAZA CON ÉL. En una reversa de 180°
-    // la horquilla del path se recorre suave: sin saltos a la otra punta,
-    // sin nubes de segmentos, sin tapar la cara.
-    //
-    // TAMBALEO: offset angular con inercia propia, ACOTADO (±0.35 rad):
-    // por construcción la cadena no puede plegarse ni saltar posiciones.
+    // --- 4) CUERPO (TODOS los segmentos 1..9): path + perturbación dominó ---
+    // Geometría exacta del path (cada segmento apunta al punto anterior de su
+    // viaje) + offset con inercia ACOTADO: ondas de perturbación tipo dominó,
+    // con relajación y compresión emergentes. Sin cuello rígido ni rigidez:
+    // la cadena no depende de la posición de la cabeza, solo del path.
     const spd = Math.hypot(p.vx, p.vy);
     const dW = p.angularVel - p.prevAngularVel;
     const dV = spd - p.prevSpd;
     p.prevAngularVel = p.angularVel;
     p.prevSpd = spd;
 
-    for (let i = 2; i < n; i++) {
+    for (let i = 1; i < n; i++) {
       const part = parts[i];
       if (i < p.breakPoint) {
         const t = (i - 1) / (n - 1);              // 0 frente -> 1 punta
@@ -325,8 +296,8 @@ const CHAIN = {
         part.vt += kick;
 
         // offset con inercia (muelle subamortiguado hacia 0)
-        const omega = 12 - 6 * t;                 // frente firme -> punta suelta
-        const zeta = 0.5;                         // vibra al corregir
+        const omega = 16 - 8 * t;                 // respuesta rápida, no pesada
+        const zeta = 0.45;                        // vibra al corregir (dominó)
         part.vt += (-part.off * omega * omega - part.vt * 2 * zeta * omega) * dt;
         part.off += part.vt * dt;
         if (part.off > 0.35) { part.off = 0.35; part.vt = Math.min(part.vt, 0); }
@@ -354,6 +325,11 @@ const CHAIN = {
         part.vt *= Math.exp(-2.0 * dt);
       }
     }
+
+    // Nariz del paquete = dirección real cabeza->seg1 (es lo que el cliente
+    // dibuja como colmillo). Con la cadena en el path queda alineada al
+    // viaje de forma natural, sin rigidez.
+    if (parts[1]) head.rot = Math.atan2(head.y - parts[1].y, head.x - parts[1].x);
 
     // Sanitizer anti-NaN
     for (const s of parts) {

@@ -58,7 +58,9 @@ ws.on('message', (d) => {
       last = { rot, speed, rots };
       if (phase === 'turn' && prev) {
         noseDev.push(Math.abs(wrap((rots[5] || rot) - rot)));
-        // cuello rígido: el segmento 1 SIEMPRE alineado con la cabeza libre
+      }
+      if (phase === 'settle' && prev) {
+        // en lín­ea recta la cabeza queda alineada con el cuerpo (path)
         neckDev.push(Math.abs(wrap((rots[1] || rot) - rot)));
       }
       if (phase === 'frozen' && prev && frozenStart > 0 && Date.now() - frozenStart > 1300) {
@@ -93,8 +95,8 @@ setTimeout(() => {
       const maxFrozen = Math.max(...frozenDeltas, 0);
       ok(Math.abs(wrap(last.rot - Math.PI)) < 0.2,
         `cabeza LIBRE llega al input directo (${(last.rot * 57.3).toFixed(0)}° vs 180°)`);
-      ok(maxNeck < 0.32,
-        `cuello sigue a la cabeza rápido y suave, sin pliegue (lag máx ${(maxNeck * 57.3).toFixed(1)}°)`);
+      ok(maxNeck < 0.3,
+        `en recta la cabeza alineada con el cuerpo del path (desvío máx ${(maxNeck * 57.3).toFixed(1)}°)`);
       ok(maxNose > 0.2,
         `cuerpo sigue la curva del path con onda (medio-cuerpo máx ${(maxNose * 57.3).toFixed(0)}°)`);
       ok(last.speed < 40,

@@ -249,7 +249,7 @@ setTimeout(() => {
   ok(!!mine, `mi uid (${myUid}) aparece en SetElements`);
   if (mine) {
     const fin = mine.parts.every(p => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.rot));
-    ok(fin && mine.parts.length === 11, `cadena íntegra (11 partes, sin NaN): ${mine.parts.length}`);
+    ok(fin && mine.parts.length === 10, `cadena íntegra (10 partes, sin NaN): ${mine.parts.length}`);
     const d01 = Math.hypot(mine.parts[1].x - mine.parts[0].x, mine.parts[1].y - mine.parts[0].y);
     ok(Math.abs(d01 - 36) < 8, `espaciado de segmentos ≈ 36px (medido ${d01.toFixed(1)})`);
   }
